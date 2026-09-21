@@ -1,0 +1,1193 @@
+---
+title: "Study3"
+author: "Faye Sanders"
+date: '2025-10-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(lavaan)
+library(dplyr)
+library(mice)
+library(ggplot2)
+library(ggcorrplot)
+library(knitr)
+library(kableExtra)
+library(psych)
+library(grid)
+
+# Load Epigenetic Age Data
+df_epi <- readRDS("...rds")
+
+# Load Brain Age and Cognition Data
+df_brain <- readRDS("....rds")
+df_cognition <- readRDS("....rds")
+df_cognition <- complete(df_cognition, action = "all")
+
+# MAE calculations (Horvath and Altum)
+df_epi <- lapply(df_epi, function(df) {
+  df$Horvath_Error <- df$Horvath_Age - df$Chronological_Age
+  df$Horvath_AbsError <- abs(df$Horvath_Error)
+  df$Altum_Error <- df$AltumAge - df$Chronological_Age
+  df$Altum_AbsError <- abs(df$Altum_Error)
+  df
+})
+
+MAEs_Horvath <- sapply(df_epi, function(df) mean(df$Horvath_AbsError))
+MAEs_Altum <- sapply(df_epi, function(df) mean(df$Altum_AbsError))
+
+# Reverse code Smoking_DNAm as it is hypomethylation which is the marker of smoking exposure
+df_epi <- lapply(df_epi, function(df) {
+  max_val <- max(df$Smoking_DNAm, na.rm = TRUE)
+  min_val <- min(df$Smoking_DNAm, na.rm = TRUE)
+  
+  # Reverse code: higher becomes lower and vice versa
+  df$Smoking_DNAm <- (max_val + min_val) - df$Smoking_DNAm
+  
+  return(df)
+})
+
+# brain age difference score
+df_brain <- lapply(df_brain, function(df) {
+  df$Centile_PAD <- df$Centile_Pred - df$Age_at_MRI
+  return(df)
+})
+
+built_env_vars <- c(
+  'building_density_age12child', 'connectivity_density_age12child',
+  'facility_richness_age12child', 'greenspace_age12child',
+  'pop_density_age12child',
+  'walkability_age12child'
+)
+
+cfa_model <- '
+  BuiltEnv =~ building_density_age12child +
+              connectivity_density_age12child +
+              facility_richness_age12child +
+              greenspace_age12child +
+              pop_density_age12child +
+              walkability_age12child
+'
+
+imp_list_with_scores_brain <- lapply(df_brain, function(df) {
+  df[built_env_vars] <- scale(df[built_env_vars])
+  fit <- cfa(cfa_model, data = df, estimator = "MLR")
+  df$BuiltEnv <- lavPredict(fit)[, "BuiltEnv"]
+  df
+})
+
+imp_list_with_scores_brain <- lapply(imp_list_with_scores_brain, function(df) {
+  df$MRI_study <- as.factor(df$MRI_study)
+  df
+})
+
+imp_list_with_scores_epi <- lapply(df_epi, function(df) {
+  df[built_env_vars] <- scale(df[built_env_vars])
+  fit <- cfa(cfa_model, data = df, estimator = "MLR")
+  df$BuiltEnv <- lavPredict(fit)[, "BuiltEnv"]
+  return(df)
+})
+
+imp_list_with_scores_cognition <- lapply(df_cognition, function(df) {
+  df[built_env_vars] <- scale(df[built_env_vars])
+  fit <- cfa(cfa_model, data = df, estimator = "MLR")
+  df$BuiltEnv <- lavPredict(fit)[, "BuiltEnv"]
+  return(df)
+})
+
+# Calculate how much of an otulier (IDC = 3859A) is
+var <- "PACEAge"  
+
+# Extract values before exclusion
+df_all_pre <- bind_rows(df_epi, .id = "imp")   
+df1 <- df_epi[[1]]                
+vals <- df1[[var]]                  
+
+# Compute z-score for IDC 3859A
+target_value <- df_all_pre %>% 
+  filter(IDC == "3859A") %>% 
+  pull(!!var)
+z_PACE <- (target_value - mean(vals, na.rm = TRUE)) / sd(vals, na.rm = TRUE)
+
+# Calculate how much of an otulier (IDC = 3859A) is
+var <- "Horvath_EAA"  
+
+# Extract values before exclusion
+df_all_pre <- bind_rows(df_epi, .id = "imp")   
+df1 <- df_epi[[1]]                
+vals <- df1[[var]]                  
+
+# Compute z-score for IDC 3859A
+target_value <- df_all_pre %>% 
+  filter(IDC == "3859A") %>% 
+  pull(!!var)
+z_Horvath <- (target_value - mean(vals, na.rm = TRUE)) / sd(vals, na.rm = TRUE)
+
+# Calculate how much of an otulier (IDC = 3859A) is
+var <- "Altum_EAA"  
+
+# Extract values before exclusion
+df_all_pre <- bind_rows(df_epi, .id = "imp")   
+df1 <- df_epi[[1]]                
+vals <- df1[[var]]                  
+
+# Compute z-score for IDC 3859A
+target_value <- df_all_pre %>% 
+  filter(IDC == "3859A") %>% 
+  pull(!!var)
+z_Altum <- (target_value - mean(vals, na.rm = TRUE)) / sd(vals, na.rm = TRUE)
+
+
+```
+
+# Checking for outliers
+
+```{r outliers check, echo = FALSE}
+
+df_all <- bind_rows(df_epi, .id = "source")
+
+plot(df_all$Altum_Error,
+     ylab = "Altum_Error",
+     xlab = "Index",
+     main = "Pooled Scatterplot of Altum_Error",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+plot(df_all$Horvath_Error,
+     ylab = "Horvath_Error",
+     xlab = "Index",
+     main = "Pooled Scatterplot of Horvath_Error",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+plot(df_all$PACEAge,
+     ylab = "PACEAge",
+     xlab = "Index",
+     main = "Pooled Scatterplot of PACEAge",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+```
+
+## We can see there is an outlier visually
+
+# Z-scores
+## PACE
+```{r outlier PACE 2, echo = FALSE}
+print(z_PACE[1])
+```
+## Horvath
+
+```{r outliers Horvath, echo = FALSE}
+print(z_Horvath[1])
+```
+## Altum
+
+```{r outliers Altum, echo = FALSE}
+
+print(z_Altum[1])
+
+# Let's exclude the outlier for EpiAge (comment out this line if you want to see scatterplot including them etc.)
+df_epi <- lapply(df_epi, function(df) {
+  df %>% filter(IDC != "3859A")
+})
+
+imp_list_with_scores_epi <- lapply(imp_list_with_scores_epi, function(df) {
+  df %>% filter(IDC != "3859A")
+})
+
+```
+
+## Outlier removed, continue with analysis
+
+```{r analysis, include = FALSE}
+
+## Urbanicity + brain age
+imp_list_complete <- lapply(imp_list_with_scores_brain, function(df) df[!is.na(df$Centile_PAD), ])
+
+centile_brainage_models <- lapply(imp_list_complete, function(df) {
+  lm(Centile_PAD ~ BuiltEnv + child_sex + smoking_child + contextual_age41mum + Age_at_MRI + MRI_study,
+     data = df)
+})
+
+coef_list <- lapply(centile_brainage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_centile_brainage <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Urbanicity + epigenetic age (Altum)
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Altum_EAA), ])
+
+altum_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(Altum_EAA ~ BuiltEnv + child_sex + contextual_age41mum + Smoking_DNAm +
+       chip + Bcell + CD4T + CD8T + Gran + Mono + NK +
+       V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+     data = df)
+})
+
+coef_list <- lapply(altum_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_altum_epiage <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Horvath
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Horvath_EAA), ])
+
+horvath_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(Horvath_EAA ~ BuiltEnv + child_sex + contextual_age41mum + Smoking_DNAm +
+       Bcell + CD4T + CD8T + Gran + Mono + NK + chip +
+       V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+     data = df)
+})
+
+coef_list <- lapply(horvath_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_horvath_epiage <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## PACE
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$PACEAge), ])
+
+pace_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(PACEAge ~ BuiltEnv + child_sex + contextual_age41mum + Smoking_DNAm +
+       chip + Bcell + CD4T + CD8T + Gran + Mono + NK +
+       V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+     data = df)
+})
+
+coef_list <- lapply(pace_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_pace_epiage <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Urbanicity + cognition
+imp_list_complete <- lapply(imp_list_with_scores_cognition, function(df) df[!is.na(df$predictive_processing_score_child_age24), ])
+
+cognition_models <- lapply(imp_list_complete, function(df) {
+  lm(predictive_processing_score_child_age24 ~ BuiltEnv + child_sex + contextual_age41mum + smoking_child + age_at_cognition_child_age24,
+     data = df)
+})
+
+coef_list <- lapply(cognition_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_cognition <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+# Sensitivity analyses (without smoking as covariate)
+## Urbanicity + brain age
+## Restrict to those with imaging data
+# Sensitivity models
+
+imp_list_complete <- lapply(imp_list_with_scores_brain, function(df) {
+  df[!is.na(df$Centile_BAA), ]
+})
+
+# Brain age (Centile)
+centile_brainage_models <- lapply(imp_list_complete, function(df) {
+  lm(
+    Centile_BAA ~ BuiltEnv + child_sex + contextual_age41mum +
+      Age_at_MRI + MRI_study,
+    data = df
+  )
+})
+
+coef_list <- lapply(centile_brainage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_centile_brainage_sens <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(
+    pooled_estimate = mean(Estimate),
+    pooled_se = mean(`Std. Error`),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    t_value = pooled_estimate / pooled_se,
+    p_value = 2 * pt(-abs(t_value), df = 100)
+  )
+
+## Urbanicity + epigenetic age
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Altum_EAA), ])
+
+# Altum
+altum_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(
+    Altum_EAA ~ BuiltEnv + child_sex + contextual_age41mum +
+      chip + Bcell + CD4T + CD8T + Gran + Mono + NK +
+      V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+    data = df
+  )
+})
+
+coef_list <- lapply(altum_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_altum_epiage_sens <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(
+    pooled_estimate = mean(Estimate),
+    pooled_se = mean(`Std. Error`),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    t_value = pooled_estimate / pooled_se,
+    p_value = 2 * pt(-abs(t_value), df = 100)
+  )
+
+# Horvath
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Horvath_EAA), ])
+
+horvath_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(
+    Horvath_EAA ~ BuiltEnv + child_sex + contextual_age41mum +
+      Bcell + CD4T + CD8T + Gran + Mono + NK +
+      V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+    data = df
+  )
+})
+
+coef_list <- lapply(horvath_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_horvath_epiage_sens <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(
+    pooled_estimate = mean(Estimate),
+    pooled_se = mean(`Std. Error`),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    t_value = pooled_estimate / pooled_se,
+    p_value = 2 * pt(-abs(t_value), df = 100)
+  )
+
+# PACE
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$PACEAge), ])
+
+pace_epiage_models <- lapply(imp_list_complete, function(df) {
+  lm(
+    PACEAge ~ BuiltEnv + child_sex + contextual_age41mum +
+      chip + Bcell + CD4T + CD8T + Gran + Mono + NK +
+      V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8 + V9 + V10,
+    data = df
+  )
+})
+
+coef_list <- lapply(pace_epiage_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_pace_epiage_sens <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(
+    pooled_estimate = mean(Estimate),
+    pooled_se = mean(`Std. Error`),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    t_value = pooled_estimate / pooled_se,
+    p_value = 2 * pt(-abs(t_value), df = 100)
+  )
+
+## Urbanicity + cognition
+imp_list_complete <- lapply(imp_list_with_scores_cognition, function(df) df[!is.na(df$predictive_processing_score_child_age24), ])
+
+cognition_models <- lapply(imp_list_complete, function(df) {
+  lm(
+    predictive_processing_score_child_age24 ~ BuiltEnv + child_sex +
+      contextual_age41mum + age_at_cognition_child_age24,
+    data = df
+  )
+})
+
+coef_list <- lapply(cognition_models, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit)))
+  tmp$term <- rownames(tmp)
+  rownames(tmp) <- NULL
+  tmp
+})
+
+coef_df <- bind_rows(coef_list, .id = "dataset")
+
+pooled_cognition_sens <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(
+    pooled_estimate = mean(Estimate),
+    pooled_se = mean(`Std. Error`),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    t_value = pooled_estimate / pooled_se,
+    p_value = 2 * pt(-abs(t_value), df = 100)
+  )
+
+# --- UNADJUSTED MODELS (BuiltEnv only) ---
+
+## Brain Age
+imp_list_complete <- lapply(imp_list_with_scores_brain, function(df) df[!is.na(df$Centile_PAD), ])
+centile_brainage_models_unadj <- lapply(imp_list_complete, function(df) {
+  lm(Centile_PAD ~ BuiltEnv, data = df)
+})
+coef_list <- lapply(centile_brainage_models_unadj, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit))); tmp$term <- rownames(tmp); rownames(tmp) <- NULL; tmp
+})
+coef_df <- bind_rows(coef_list, .id = "dataset")
+pooled_centile_brainage_unadj <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Altum
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Altum_EAA), ])
+altum_epiage_models_unadj <- lapply(imp_list_complete, function(df) {
+  lm(Altum_EAA ~ BuiltEnv, data = df)
+})
+coef_list <- lapply(altum_epiage_models_unadj, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit))); tmp$term <- rownames(tmp); rownames(tmp) <- NULL; tmp
+})
+coef_df <- bind_rows(coef_list, .id = "dataset")
+pooled_altum_epiage_unadj <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Horvath
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$Horvath_EAA), ])
+horvath_epiage_models_unadj <- lapply(imp_list_complete, function(df) {
+  lm(Horvath_EAA ~ BuiltEnv, data = df)
+})
+coef_list <- lapply(horvath_epiage_models_unadj, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit))); tmp$term <- rownames(tmp); rownames(tmp) <- NULL; tmp
+})
+coef_df <- bind_rows(coef_list, .id = "dataset")
+pooled_horvath_epiage_unadj <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## PACE
+imp_list_complete <- lapply(imp_list_with_scores_epi, function(df) df[!is.na(df$PACEAge), ])
+pace_epiage_models_unadj <- lapply(imp_list_complete, function(df) {
+  lm(PACEAge ~ BuiltEnv, data = df)
+})
+coef_list <- lapply(pace_epiage_models_unadj, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit))); tmp$term <- rownames(tmp); rownames(tmp) <- NULL; tmp
+})
+coef_df <- bind_rows(coef_list, .id = "dataset")
+pooled_pace_epiage_unadj <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+## Cognition
+imp_list_complete <- lapply(imp_list_with_scores_cognition, function(df) df[!is.na(df$predictive_processing_score_child_age24), ])
+cognition_models_unadj <- lapply(imp_list_complete, function(df) {
+  lm(predictive_processing_score_child_age24 ~ BuiltEnv, data = df)
+})
+coef_list <- lapply(cognition_models_unadj, function(fit) {
+  tmp <- as.data.frame(coef(summary(fit))); tmp$term <- rownames(tmp); rownames(tmp) <- NULL; tmp
+})
+coef_df <- bind_rows(coef_list, .id = "dataset")
+pooled_cognition_unadj <- coef_df %>%
+  dplyr::group_by(term) %>%
+  dplyr::summarize(pooled_estimate = mean(Estimate),
+            pooled_se = mean(`Std. Error`),
+            .groups = "drop") %>%
+  dplyr::mutate(t_value = pooled_estimate / pooled_se,
+         p_value = 2 * pt(-abs(t_value), df = 100))
+
+
+```
+
+```{r format-table-setup, include=FALSE}
+format_results_table <- function(df, caption = "Results Table") {
+  df %>%
+    mutate(
+      term = case_when(
+        p_value < 0.05 ~ paste0("**", term, "**"),
+        p_value >= 0.05 & p_value < 0.10 ~ paste0("*", term, "*"),
+        TRUE ~ term
+      ),
+      pooled_estimate = case_when(
+        p_value < 0.05 ~ paste0("**", round(pooled_estimate, 3), "**"),
+        p_value >= 0.05 & p_value < 0.10 ~ paste0("*", round(pooled_estimate, 3), "*"),
+        TRUE ~ as.character(round(pooled_estimate, 3))
+      ),
+      pooled_se = round(pooled_se, 3),
+      t_value = round(t_value, 2),
+      p_value = case_when(
+        p_value < 0.05 ~ paste0("**", round(p_value, 3), "**"),
+        p_value >= 0.05 & p_value < 0.10 ~ paste0("*", round(p_value, 3), "*"),
+        TRUE ~ as.character(round(p_value, 3))
+      )
+    ) %>%
+    kable("html", escape = FALSE, caption = caption) %>%
+    kable_styling(full_width = FALSE,
+                  bootstrap_options = c("striped", "hover", "condensed"))
+}
+
+```
+
+
+# Descriptives
+
+```{r venn-diagram, echo=FALSE, fig.width=6, fig.height=6}
+# --- Venn Diagram of Participant Overlaps ---
+
+library(ggVennDiagram)
+
+brain_ids <- unique(unlist(lapply(df_brain, function(df) df$IDC)))
+epi_ids <- unique(unlist(lapply(df_epi, function(df) df$IDC)))
+cog_ids <- unique(unlist(lapply(df_cognition, function(df) df$IDC)))
+
+id_list <- list(
+  Brain = brain_ids,
+  Epigenetic = epi_ids,
+  Cognition = cog_ids
+)
+
+ggVennDiagram(id_list, label = "count", label_alpha = 0) +
+  scale_fill_gradient(low = "#e0f3db", high = "#43a2ca") +
+  theme_void() +
+  ggtitle("Overlap of Participants Across Datasets") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16))
+
+```
+
+```{r descriptives setup, include = FALSE}
+
+# Function to calculate pooled correlation matrix
+pool_correlations <- function(imp_list, vars) {
+  cor_list <- lapply(imp_list, function(df) cor(df[vars], use = "pairwise.complete.obs"))
+  # Average correlations across imputations
+  cor_array <- simplify2array(cor_list)
+  cor_mean <- apply(cor_array, c(1,2), mean)
+  return(cor_mean)
+}
+
+# Brain Age variables
+brain_corr_vars <- c("BuiltEnv", "Centile_PAD", "child_sex", "contextual_age41mum", "Age_at_MRI", "smoking_child")
+
+# Epigenetic Age variables (choose one age model at a time)
+epi_corr_vars <- c("BuiltEnv", "Altum_EAA", "Horvath_EAA", "PACEAge",
+                   "child_sex", "contextual_age41mum", "Smoking_DNAm", "Chronological_Age")
+
+# Cognition variables
+cog_corr_vars <- c("BuiltEnv", "predictive_processing_score_child_age24", "smoking_child",
+                   "child_sex", "contextual_age41mum", "age_at_cognition_child_age24")
+
+cor_brain <- pool_correlations(imp_list_with_scores_brain, brain_corr_vars)
+cor_epi   <- pool_correlations(imp_list_with_scores_epi, epi_corr_vars)
+cor_cog   <- pool_correlations(imp_list_with_scores_cognition, cog_corr_vars)
+
+# Descriptives 
+
+# Function to get descriptive statistics for one dataset
+get_descriptives <- function(df, vars, categorical = NULL) {
+  df <- df %>% dplyr::select(all_of(vars))
+  
+  descriptives <- lapply(names(df), function(var) {
+    if (!is.null(categorical) && var %in% categorical) {
+      # For categorical vars, compute % per category
+      tbl <- table(df[[var]], useNA = "no")
+      prop_tbl <- round(100 * prop.table(tbl), 1)
+      paste0(names(prop_tbl), ": ", prop_tbl, "%", collapse = "; ")
+    } else {
+      # For numeric vars, compute mean, sd, min, max
+      stats <- df[[var]]
+      paste0(
+        "Mean=", round(mean(stats, na.rm = TRUE), 2),
+        ", SD=", round(sd(stats, na.rm = TRUE), 2),
+        ", Min=", round(min(stats, na.rm = TRUE), 2),
+        ", Max=", round(max(stats, na.rm = TRUE), 2)
+      )
+    }
+  })
+  
+  names(descriptives) <- names(df)
+  as.data.frame(descriptives, stringsAsFactors = FALSE)
+}
+
+# Function to pool descriptives across imputations
+pool_descriptives <- function(imp_list, vars, categorical = NULL) {
+  descriptives_list <- lapply(imp_list, get_descriptives, vars = vars, categorical = categorical)
+  descriptives_df <- bind_rows(descriptives_list)
+  
+  # For numeric vars, combine full summary strings instead of just Mean
+  descriptives_pooled <- descriptives_df %>% dplyr::summarise(
+    dplyr::across(all_of(vars), ~ {
+      if (!is.null(categorical) && cur_column() %in% categorical) {
+        .[1]  # keep first string for categorical
+      } else {
+        # For numeric, combine all imputations and show mean, SD, min, max
+        # Extract numeric values
+        nums <- sapply(., function(x) {
+          m <- as.numeric(sub("Mean=([0-9.-]+).*", "\\1", x))
+          s <- as.numeric(sub(".*SD=([0-9.-]+).*", "\\1", x))
+          min_val <- as.numeric(sub(".*Min=([0-9.-]+).*", "\\1", x))
+          max_val <- as.numeric(sub(".*Max=([0-9.-]+).*", "\\1", x))
+          c(m = m, sd = s, min = min_val, max = max_val)
+        })
+        # Average across imputations
+        m <- round(mean(nums["m", ], na.rm = TRUE), 2)
+        s <- round(mean(nums["sd", ], na.rm = TRUE), 2)
+        min_val <- round(mean(nums["min", ], na.rm = TRUE), 2)
+        max_val <- round(mean(nums["max", ], na.rm = TRUE), 2)
+        paste0("Mean=", m, ", SD=", s, ", Min=", min_val, ", Max=", max_val)
+      }
+    })
+  )
+  
+  return(descriptives_pooled)
+}
+
+# --- Apply to your datasets ---
+brain_vars <- c("BuiltEnv", "Centile_PAD", "child_sex", "contextual_age41mum", "Age_at_MRI", "smoking_child", "ethnicity_child")
+brain_descriptives <- pool_descriptives(imp_list_with_scores_brain, brain_vars, categorical = c("child_sex", "ethnicity_child"))
+# Compute sample sizes from first imputation
+brain_N <- sapply(imp_list_with_scores_brain[[1]]["BuiltEnv"], function(x) sum(!is.na(x)))
+# Add N as a new column
+brain_descriptives <- brain_descriptives %>% mutate(N = brain_N)
+
+epi_vars <- c("BuiltEnv", "Altum_Error", "Horvath_Error", "PACEAge",
+              "child_sex", "contextual_age41mum", "Smoking_DNAm", "Chronological_Age", "ethnicity_child")
+epi_descriptives <- pool_descriptives(imp_list_with_scores_epi, epi_vars, categorical = c("child_sex", "ethnicity_child"))
+epi_N <- sapply(imp_list_with_scores_epi[[1]]["BuiltEnv"], function(x) sum(!is.na(x)))
+epi_descriptives <- epi_descriptives %>% mutate(N = epi_N)
+
+cog_vars <- c("BuiltEnv", "predictive_processing_score_child_age24", "smoking_child",
+              "child_sex", "contextual_age41mum", "age_at_cognition_child_age24", "ethnicity_child")
+cog_descriptives <- pool_descriptives(imp_list_with_scores_cognition, cog_vars, categorical = c("child_sex", "ethnicity_child"))
+cog_N <- sapply(imp_list_with_scores_cognition[[1]]["BuiltEnv"], function(x) sum(!is.na(x)))
+cog_descriptives <- cog_descriptives %>% mutate(N = cog_N)
+
+# Combine
+descriptives_combined <- bind_rows(
+  brain_descriptives %>% mutate(sample = "Brain Age"),
+  epi_descriptives %>% mutate(sample = "Epigenetic Age"),
+  cog_descriptives %>% mutate(sample = "Cognition")
+) %>% relocate(sample)
+
+# Built Environment component-level descriptives
+get_numeric_descriptives <- function(df, vars) {
+  df <- df %>% dplyr::select(all_of(vars))
+  
+  descriptives <- lapply(names(df), function(var) {
+    stats <- df[[var]]
+    paste0(
+      "Mean=", round(mean(stats, na.rm = TRUE), 2),
+      ", SD=", round(sd(stats, na.rm = TRUE), 2),
+      ", Min=", round(min(stats, na.rm = TRUE), 2),
+      ", Max=", round(max(stats, na.rm = TRUE), 2)
+    )
+  })
+  
+  names(descriptives) <- names(df)
+  as.data.frame(descriptives, stringsAsFactors = FALSE)
+}
+
+# Function to pool descriptives across imputations
+pool_numeric_descriptives <- function(imp_list, vars) {
+  descriptives_list <- lapply(imp_list, get_numeric_descriptives, vars = vars)
+  descriptives_df <- bind_rows(descriptives_list)
+  
+  # Average numeric values across imputations
+  descriptives_pooled <- descriptives_df %>% dplyr::summarise(
+    across(all_of(vars), ~ {
+      nums <- sapply(., function(x) {
+        m <- as.numeric(sub("Mean=([0-9.-]+).*", "\\1", x))
+        s <- as.numeric(sub(".*SD=([0-9.-]+).*", "\\1", x))
+        min_val <- as.numeric(sub(".*Min=([0-9.-]+).*", "\\1", x))
+        max_val <- as.numeric(sub(".*Max=([0-9.-]+).*", "\\1", x))
+        c(m = m, sd = s, min = min_val, max = max_val)
+      })
+      m <- round(mean(nums["m", ], na.rm = TRUE), 2)
+      s <- round(mean(nums["sd", ], na.rm = TRUE), 2)
+      min_val <- round(mean(nums["min", ], na.rm = TRUE), 2)
+      max_val <- round(mean(nums["max", ], na.rm = TRUE), 2)
+      paste0("Mean=", m, ", SD=", s, ", Min=", min_val, ", Max=", max_val)
+    })
+  )
+  
+  return(descriptives_pooled)
+}
+
+# Apply to your datasets (original BuiltEnv items)
+built_env_original_vars <- c(
+  'building_density_age12child',
+  'connectivity_density_age12child',
+  'facility_richness_age12child',
+  'greenspace_age12child',
+  'pop_density_age12child',
+  'bus_lines_age12child',
+  'walkability_age12child',
+  'nearest_road_age12child'
+)
+
+# Brain Age
+brain_builtenv_descriptives <- pool_numeric_descriptives(df_brain, built_env_original_vars) %>%
+  mutate(Sample = "Brain Age") %>%
+  relocate(Sample)
+
+# Epigenetic Age
+epi_builtenv_descriptives <- pool_numeric_descriptives(df_epi, built_env_original_vars) %>%
+  mutate(Sample = "Epigenetic Age") %>%
+  relocate(Sample)
+
+# Cognition
+cog_builtenv_descriptives <- pool_numeric_descriptives(df_cognition, built_env_original_vars) %>%
+  mutate(Sample = "Cognition") %>%
+  relocate(Sample)
+
+# Combine all BuiltEnv component descriptives
+builtenv_descriptives_combined <- bind_rows(
+  brain_builtenv_descriptives,
+  epi_builtenv_descriptives,
+  cog_builtenv_descriptives
+)
+
+
+```
+
+```{r descriptives, echo = FALSE}
+
+
+# Main descriptives table
+descriptives_combined %>%
+  kable("html", caption = "Pooled Descriptive Statistics Across Samples") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+
+# Built environment component table
+builtenv_descriptives_combined %>%
+  kable("html", caption = "Built Environment Component Descriptives") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+
+# Brain Age
+ggcorrplot(cor_brain, hc.order = TRUE, type = "lower",
+           lab = TRUE, lab_size = 3, title = "Brain Age Correlation Matrix")
+
+df_all <- bind_rows(df_epi, .id = "source")
+
+plot(df_all$Altum_Error,
+     ylab = "Altum_Error",
+     xlab = "Index",
+     main = "Pooled Scatterplot of Altum_Error",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+plot(df_all$Horvath_Error,
+     ylab = "Horvath_Error",
+     xlab = "Index",
+     main = "Pooled Scatterplot of Horvath_Error",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+plot(df_all$PACEAge,
+     ylab = "PACEAge",
+     xlab = "Index",
+     main = "Pooled Scatterplot of PACEAge",
+     pch = 16,
+     col = "blue",
+     cex = 0.1)
+
+
+brain_df_complete <- imp_list_with_scores_brain[[1]][brain_corr_vars]
+pairs.panels(
+brain_df_complete,
+method = "pearson",
+hist.col = "#56B4E9",
+density = TRUE,
+ellipses = TRUE,
+main = "Brain Age: Pairs Panels"
+)
+
+
+# Epigenetic Age
+ggcorrplot(cor_epi, hc.order = TRUE, type = "lower",
+           lab = TRUE, lab_size = 3, title = "Epigenetic Age Correlation Matrix")
+
+epi_df_complete <- imp_list_with_scores_epi[[1]][epi_corr_vars]
+pairs.panels(
+epi_df_complete,
+method = "pearson",
+hist.col = "#D55E00",
+density = TRUE,
+ellipses = TRUE,
+main = "Epigenetic Age: Pairs Panels"
+)
+
+# Cognition
+ggcorrplot(cor_cog, hc.order = TRUE, type = "lower",
+           lab = TRUE, lab_size = 3, title = "Cognition Correlation Matrix")
+
+cog_df_complete <- imp_list_with_scores_cognition[[1]][cog_corr_vars]
+pairs.panels(
+cog_df_complete,
+method = "pearson",
+hist.col = "#009E73",
+density = TRUE,
+ellipses = TRUE,
+main = "Cognition: Pairs Panels"
+)
+
+
+```
+
+
+# Main Adjusted Analyses
+
+```{r results-tables, echo=FALSE}
+format_results_table(pooled_centile_brainage, "Adjusted Model: Brain Age (Centile)")
+
+format_results_table(pooled_altum_epiage, "Adjusted Model: Epigenetic Age (Altum)")
+
+format_results_table(pooled_horvath_epiage, "Adjusted Model: Epigenetic Age (Horvath)")
+
+format_results_table(pooled_pace_epiage, "Adjusted Model: Epigenetic Age (PACE)")
+
+format_results_table(pooled_cognition, "Adjusted Model: Cognition")
+
+```
+
+# Unadjusted Analyses (No Covariates)
+
+```{r unadjusted, echo=FALSE}
+
+format_results_table(pooled_centile_brainage_unadj, "Unadjusted Model: Brain Age (Centile)")
+
+format_results_table(pooled_altum_epiage_unadj, "Unadjusted Model: Epigenetic Age (Altum)")
+
+format_results_table(pooled_horvath_epiage_unadj, "Unadjusted Model: Epigenetic Age (Horvath)")
+
+format_results_table(pooled_pace_epiage_unadj, "Unadjusted Model: Epigenetic Age (PACE)")
+
+format_results_table(pooled_cognition_unadj, "Unadjusted Model: Cognition")
+
+```
+
+# Sensitivity Analysis (No Smoking)
+
+```{r sensitivity, echo=FALSE}
+
+format_results_table(pooled_centile_brainage_sens, "Sensitivity Model: Brain Age (Centile)")
+
+format_results_table(pooled_altum_epiage_sens, "Sensitivity Model: Epigenetic Age (Altum)")
+
+format_results_table(pooled_horvath_epiage_sens, "Sensitivity Model: Epigenetic Age (Horvath)")
+
+format_results_table(pooled_pace_epiage_sens, "Sensitivity Model: Epigenetic Age (PACE)")
+
+format_results_table(pooled_cognition_sens, "Sensitivity Model: Cognition")
+
+```
+
+```{r plot setup, include = FALSE}
+results_all <- bind_rows(
+  pooled_centile_brainage_unadj %>% mutate(outcome = "Brain-PAD (Centile)", model = "Unadjusted"),
+  pooled_centile_brainage       %>% mutate(outcome = "Brain-PAD (Centile)", model = "Adjusted"),
+  pooled_centile_brainage_sens  %>% mutate(outcome = "Brain-PAD (Centile)", model = "Sensitivity"),
+  
+  pooled_altum_epiage_unadj     %>% mutate(outcome = "Altum EAA", model = "Unadjusted"),
+  pooled_altum_epiage           %>% mutate(outcome = "Altum EAA", model = "Adjusted"),
+  pooled_altum_epiage_sens      %>% mutate(outcome = "Altum EAA", model = "Sensitivity"),
+  
+  pooled_horvath_epiage_unadj   %>% mutate(outcome = "Horvath EAA", model = "Unadjusted"),
+  pooled_horvath_epiage         %>% mutate(outcome = "Horvath EAA", model = "Adjusted"),
+  pooled_horvath_epiage_sens    %>% mutate(outcome = "Horvath EAA", model = "Sensitivity"),
+  
+  pooled_pace_epiage_unadj      %>% mutate(outcome = "PACE", model = "Unadjusted"),
+  pooled_pace_epiage            %>% mutate(outcome = "PACE", model = "Adjusted"),
+  pooled_pace_epiage_sens       %>% mutate(outcome = "PACE", model = "Sensitivity"),
+  
+  pooled_cognition_unadj        %>% mutate(outcome = "Cognition", model = "Unadjusted"),
+  pooled_cognition              %>% mutate(outcome = "Cognition", model = "Adjusted"),
+  pooled_cognition_sens         %>% mutate(outcome = "Cognition", model = "Sensitivity")
+) %>% filter(term == "BuiltEnv")
+
+
+```
+
+```{r plots, echo = FALSE, fig.height=3.5}
+
+# reorder outcomes so that epiages together 
+results_all <- results_all %>%
+  mutate(
+    outcome = factor(outcome, levels = c(
+      "Cognition",  # bottom
+      "Brain-PAD (Centile)",
+      "PACE",
+      "Altum EAA",
+      "Horvath EAA"   # top
+    ))
+  )
+
+
+ggplot(results_all, aes(
+  y = outcome,
+  x = pooled_estimate,
+  color = model,
+  shape = model
+)) +
+  geom_point(size = 3, position = position_dodge(width = 0.35)) +
+  geom_errorbarh(
+    aes(
+      xmin = pooled_estimate - 1.96 * pooled_se,
+      xmax = pooled_estimate + 1.96 * pooled_se
+    ),
+    height = 0.2,
+    position = position_dodge(width = 0.35)
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Effect of Built Environment Factor (Estimate +/- 95% CI)",
+    y = "",
+    title = "Associations Between Built Environment Factor and Biological Aging / Cognition",
+    color = "Model Type",
+    shape = "Model Type"
+  ) +
+  # Custom colour palette 
+  scale_color_manual(values = c(
+    "Unadjusted" = "#E68A04",  
+    "Adjusted"   = "#56B4E9", 
+    "Sensitivity"= "#000000"   
+  )) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+
+```
+
+# Correlation between SmokingDNAm and Self-Report Smoking
+
+```{r smoking, include = FALSE}
+
+cor_smoking <- lapply(df_epi, function(df) {
+  cor(df$smoking_child, df$Smoking_DNAm, use = "complete.obs", method = "pearson")
+})
+
+df_plot <- bind_rows(df_epi, .id = "dataset")
+
+```
+
+```{r smoking plot, echo = FALSE}
+ggplot(df_plot, aes(x = smoking_child, y = Smoking_DNAm)) +
+  geom_point(alpha = 0.5) +  # semi-transparent points
+  geom_smooth(method = "lm", color = "blue") +  # regression line
+  theme_minimal() +
+  labs(
+    x = "Self-Reported Smoking (Child at age 17)",
+    y = "DNAm Smoking Score at age 17",
+    title = "Scatterplot of Self-Report Smoking vs DNAm Smoking",
+    label = "-0.21"
+    
+  )
+
+```
+
+```{r difference tests, echo = FALSE}
+
+brain <- imp_list_with_scores_brain[[1]] %>%
+  mutate(sample = "Brain") %>%
+  select(sample, BuiltEnv, contextual_age41mum, Age_at_MRI,
+         smoking_child, child_sex, ethnicity_child)
+
+epi <- imp_list_with_scores_epi[[1]] %>%
+  mutate(sample = "Epigenetic") %>%
+  select(sample, BuiltEnv, contextual_age41mum, Chronological_Age,
+         Smoking_DNAm, child_sex, ethnicity_child)
+
+cog <- imp_list_with_scores_cognition[[1]] %>%
+  mutate(sample = "Cognition") %>%
+  select(sample, BuiltEnv, contextual_age41mum,
+         age_at_cognition_child_age24, smoking_child,
+         child_sex, ethnicity_child)
+
+desc_df <- bind_rows(brain, epi, cog)
+
+desc_df <- desc_df %>%
+  mutate(
+    age_at_outcome = case_when(
+      sample == "Brain" ~ Age_at_MRI,
+      sample == "Epigenetic" ~ Chronological_Age,
+      sample == "Cognition" ~ age_at_cognition_child_age24
+    )
+  )
+
+summary(aov(BuiltEnv ~ sample, data = desc_df))
+
+summary(aov(contextual_age41mum ~ sample, data = desc_df))
+
+summary(aov(age_at_outcome ~ sample, data = desc_df))
+
+chisq.test(table(desc_df$sample,
+                 desc_df$child_sex))
+
+chisq.test(table(desc_df$sample,
+                 desc_df$ethnicity_child))
+
+ses_model <- aov(contextual_age41mum ~ sample, data = desc_df)
+
+summary(ses_model)
+
+TukeyHSD(ses_model)
+
+age_model <- aov(age_at_outcome ~ sample, data = desc_df)
+
+summary(age_model)
+
+TukeyHSD(age_model)
+
+pairwise.prop.test(
+  x = table(desc_df$sample, desc_df$child_sex)[,2],   # males
+  n = rowSums(table(desc_df$sample, desc_df$child_sex)),
+  p.adjust.method = "holm"
+)
+
+pairwise_chisq <- function(dat, group, outcome){
+
+  combs <- combn(unique(dat[[group]]), 2, simplify = FALSE)
+
+  lapply(combs, function(x){
+
+    sub <- dat[dat[[group]] %in% x, ]
+
+    test <- chisq.test(table(sub[[group]], sub[[outcome]]))
+
+    data.frame(
+      Comparison = paste(x, collapse = " vs "),
+      X2 = test$statistic,
+      p = test$p.value
+    )
+
+  }) |> bind_rows()
+
+}
+
+pairwise_chisq(desc_df, "sample", "ethnicity_child")
+
+library(effectsize)
+
+eta_squared(ses_model)
+
+eta_squared(age_model)
+
+
+cramers_v(table(desc_df$sample, desc_df$child_sex))
+
+cramers_v(table(desc_df$sample, desc_df$ethnicity_child))
+
+```

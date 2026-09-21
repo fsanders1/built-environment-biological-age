@@ -1,0 +1,521 @@
+---
+title: "MCS_analysis"
+author: "Faye Sanders"
+date: "2026-01-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(foreign)
+library(dplyr)
+library(mice)
+library(reshape2)
+library(psych)
+library(ggplot2)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(GGally)
+
+
+## Load datasets
+### Green Space Deciles at Wave 5 (age 11 - maps most closely to our age 12 in ALSPAC)
+green_space <- read.spss(".../UKDA-8154-spss/spss/spss28/green_space_ward_deciles_mcs5.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+### Urban-rural classification at Wave 5 
+urbanicity <- read.spss(".../UKDA-7464-spss/spss/spss28/mcs5_geographically_linked_data.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+urbanicity <- urbanicity[, c("EMORPCDE", "MCSID")] # ONS 2005 urban morphology code
+
+## Recode so that higher urbanicity = higher score
+table(urbanicity$EMORPCDE)
+urbanicity$urban <- ifelse(urbanicity$EMORPCDE == 1, 3,
+                ifelse(urbanicity$EMORPCDE == 3, 1,
+                       urbanicity$EMORPCDE)) 
+table(urbanicity$urban)
+
+urbanicity$EMORPCDE <- NULL
+
+### Cognition at Age 17 sweep (Wave 7)
+cognition <- read.spss(".../UKDA-8682-spss/spss/spss28/mcs7_cm_cognitive_assessment.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+### Smoking at Age 17 sweep (Wave 7)
+smoking <- read.spss(".../UKDA-8682-spss/spss/spss28/mcs7_cm_interview.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+smoking <- smoking[, c("GCSMOK00", "MCSID")]
+smoking <- smoking %>% rename(smoking = GCSMOK00)
+
+### Sex at Age 17 sweep (Wave 7)
+sex <- read.spss(".../UKDA-8682-spss/spss/spss28/mcs7_hhgrid.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+sex <- sex[, c("GHCSEX00", "MCSID")]
+
+#### only keep sex of the cohort member
+sex_non_missing <- sex %>%
+  filter(!is.na(GHCSEX00))
+
+sex_missing_one <- sex %>%
+  group_by(MCSID) %>%
+  filter(all(is.na(GHCSEX00))) %>%  # IDs with no sex anywhere
+  slice(1) %>%                      # keep just one row
+  ungroup()
+
+
+sex_clean <- bind_rows(sex_non_missing, sex_missing_one)
+sex_clean <- sex_clean %>% rename(sex = GHCSEX00)
+
+### Age at Age 17 sweep (Wave 7)
+age <- read.spss(".../UKDA-8682-spss/spss/spss28/mcs7_cm_derived.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+age <- age[, c("GCMCS7AG", "MCSID")]
+age <- age %>% rename(age = GCMCS7AG)
+
+### SES measures
+employment_homeless <- read.spss(".../UKDA-7464-spss/spss/spss28/mcs5_parent_interview.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+income <- read.spss(".../UKDA-7464-spss/spss/spss28/mcs5_family_derived.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+## SES ##
+income <- income[, c("EOEDE000", "MCSID")]
+employment_homeless <- employment_homeless[, c("EPHOMS00", "EPACQU0A",
+                                               "EPACQU0B",
+                                               "EPACQU0C",
+                                               "EPACQU0D",
+                                               "EPACQU0E",
+                                               "EPACQU0F",
+                                               "EPACQU0G",
+                                               "EPACQU0H",
+                                               "EPACQU0I",
+                                               "EPACQU0J",
+                                               "EPACQU0K",
+                                               "EPACQU0L", "MCSID")]
+
+## Auxilliary variables ## (Harmonized to best of ability with ALSPAC)
+# child ethnicity
+ethnicity <- read.spss(".../UKDA-4683-spss/spss/spss28/mcs1_cm_derived.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+ethnicity <- ethnicity[, c("ADCEEA00_R30", "MCSID")]
+
+## recode to match coding of ethnicity in ALSPAC, 1 = white, 2 = non-white
+ethnicity$ethnicity_child <- ifelse(is.na(ethnicity$ADCEEA00_R30), NA,
+                     ifelse(ethnicity$ADCEEA00_R30 %in% c(1, 2), 1, 2))
+
+ethnicity$ADCEEA00_R30 <- NULL
+
+## check it worked
+table(ethnicity$ethnicity_child)
+
+# active travel 
+
+active_travel <- read.spss(".../UKDA-8156-spss/spss/spss28/mcs6_parent_cm_interview.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+active_travel <- active_travel[, c("FPTRSC00", "FPTRHO00", "FPTRDI00", "FPTRTI00", "MCSID")]
+
+active_travel$FPTRDI00 <- ifelse(active_travel$FPTRHO00 == 1, 
+                       active_travel$FPTRSC00,   # set to FPTRSC00 if FPTRHO00 == 1
+                       active_travel$FPTRDI00)   # otherwise keep original value
+
+active_travel <- active_travel %>% rename(travel_to_school = FPTRSC00)
+active_travel <- active_travel %>% rename(travel_from_school = FPTRDI00)
+active_travel <- active_travel %>% rename(school_travel_time = FPTRTI00)
+
+# Mums depression
+mum_depression <- read.spss(".../UKDA-8156-spss/spss/spss28/mcs6_parent_interview.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+mum_depression <- mum_depression[, c("FPPHHO00", "FPPHRF00", "FPPHEE00", "FPPHWO00", "FPPHNE00", "MCSID")]
+
+# Time at address
+time_address <- read.spss(".../UKDA-8156-spss/spss/spss28/mcs6_parent_interview.sav", to.data.frame = TRUE, use.value.labels = FALSE)
+
+time_address <- time_address[, c("FPMOAD00", "MCSID")]
+
+percent_missing <- sum(is.na(time_address$FPMOAD00)) / length(time_address$FPMOAD00) * 100
+ 
+percent_missing 
+
+### Harmonize highest level of education with how it is defined in ALSPAC
+
+employment_homeless <- employment_homeless %>%
+  mutate(
+    highest_education = case_when(
+      EPACQU0A == 1 | EPACQU0B == 1 ~ 1,  # degree
+      EPACQU0F == 1 ~ 2,                  # a-level
+      EPACQU0G == 1 ~ 3,                  # o-level
+      EPACQU0C == 1 | EPACQU0D == 1 | EPACQU0E == 1 | EPACQU0I == 1 ~ 4,  # vocational
+      EPACQU0H == 1 ~ 5,                  # cse
+      EPACQU0J == 1 | EPACQU0K == 1 | EPACQU0L == 1 ~ NA_real_
+      # everything else = NA
+    )
+  )
+
+employment_homeless <- employment_homeless[, c("highest_education", "EPHOMS00", "MCSID")]
+
+
+# OECD Weekly income = equivalised (Adjusted income that accounts for household size and composition (OECD scale))
+
+income <- income %>% rename(OECD_weekly_income = EOEDE000)
+employment_homeless <- employment_homeless %>% rename(ever_homeless = EPHOMS00)
+
+SES_merged <- merge(income, employment_homeless, by = "MCSID")
+
+### Check coding (higher score = worse SES)
+table(SES_merged$highest_education)
+table(SES_merged$ever_homeless)
+
+# Homeless needs reverse coding so 1=yes, 0=no
+SES_merged <- SES_merged %>%
+  mutate(
+    ever_homeless_r = ifelse(ever_homeless == 2, 0,
+                    ifelse(ever_homeless == 1, 1, NA))  # optional: NA for anything else
+  )
+
+table(SES_merged$ever_homeless_r)
+
+green_space <- green_space[, c("EGREENSP", "MCSID")]
+
+green_space <- green_space %>% rename(green_space = EGREENSP)
+
+# 1 = gave correct answer, all else = incorrect answer
+vars <- c(
+  "GCNUM00","GCCHIC100","GCNAEX00","GCNAEG1","GCNAEG2",
+  "GCNAEG3","GCNAAS0A","GCNAAS0B","GCNAAS0C","GCNAAS0D",
+  "GCNAAS0E","GCNAAS0F","GCNAAS0G","GCNAAS0H","GCNAAS0I","GCNAAS0J")
+
+## Create score counting no. of 1's (correct answers)
+cognition <- cognition %>%
+  mutate(
+    cognitive_performance = rowSums(across(all_of(vars)) == 1, na.rm = TRUE)
+  )
+
+## Only keep what we need
+cognition <- cognition[, c("cognitive_performance", "MCSID")]
+
+# Remove duplicates in all our dataframes
+SES_merged <- SES_merged[!duplicated(SES_merged$MCSID), ]
+age        <- age[!duplicated(age$MCSID), ]
+sex_clean  <- sex_clean[!duplicated(sex_clean$MCSID), ]
+smoking$MCSID <- trimws(smoking$MCSID)
+smoking    <- smoking[!duplicated(smoking$MCSID), ]
+ethnicity    <- ethnicity[!duplicated(ethnicity$MCSID), ]
+active_travel    <- active_travel [!duplicated(active_travel $MCSID), ]
+mum_depression    <- mum_depression[!duplicated(mum_depression$MCSID), ]
+
+# Remove trailing white space in IDs
+mum_depression$MCSID <- trimws(mum_depression$MCSID)
+active_travel $MCSID <- trimws(active_travel $MCSID)
+ethnicity $MCSID <- trimws(ethnicity $MCSID)
+
+# Merge cognition and green space data by ID
+merged <- merge(cognition, green_space, by = "MCSID", all.y = TRUE)
+merged <- merge(merged, urbanicity, by = "MCSID", all.y = TRUE)
+
+# Now merge our covariates with this
+merged_all <- merge(merged, SES_merged, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, age, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, sex_clean, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, smoking, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, ethnicity, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, active_travel, by = "MCSID", all.x = TRUE)
+merged_all <- merge(merged_all, mum_depression, by = "MCSID", all.x = TRUE)
+
+# Complete cases for green space
+merged_all <- merged_all[!is.na(merged_all$green_space), ]
+
+
+# Compare missingness levels across variables
+missing_pct <- sapply(merged_all, function(x) {
+  mean(is.na(x)) * 100
+})
+
+missing_pct
+
+merged_all$highest_education <- NULL
+merged_all$ever_homeless <- NULL
+merged_all$ever_homeless_r <- NULL
+
+# Remove what we no longer need
+rm(cognition, employment_homeless, green_space, income, merged, SES_merged, sex, sex_clean, sex_missing_one, sex_non_missing, age, smoking)
+gc()
+
+
+## Load imputed data
+mod_imp <- readRDS("....rds")
+
+imputed1 <- complete(mod_imp, 1)
+
+numeric_vars <- imputed1 %>% select(cognitive_performance, green_space, OECD_weekly_income, age, urban)
+
+cor_matrix <- cor(numeric_vars, use = "pairwise.complete.obs")
+
+cor_long <- melt(cor_matrix)
+colnames(cor_long) <- c("Variable1", "Variable2", "Correlation")
+
+# Main model
+
+fit <- with(
+  mod_imp,
+  lm(cognitive_performance ~ green_space * urban + sex + OECD_weekly_income + age + smoking)) 
+
+pooled <- pool(fit)
+
+pooled_summary <- summary(pooled)
+
+# meta-analysis
+
+# main
+
+fit_main <- with(
+  mod_imp,
+  lm(cognitive_performance ~ urban * green_space + sex + OECD_weekly_income + age + smoking)) 
+
+pooled_main <- pool(fit_main)
+
+pooled_summary_main <- summary(pooled_main)
+
+# Sensitvity (no smoking)
+fit2 <- with(
+  mod_imp,
+  lm(cognitive_performance ~ urban * green_space + sex + OECD_weekly_income + age)) 
+
+pooled2 <- pool(fit2)
+
+pooled_summary2 <- summary(pooled2)
+
+# unadjusted
+fit3 <- with(
+  mod_imp,
+  lm(cognitive_performance ~ urban)) 
+
+pooled3 <- pool(fit3)
+
+pooled_summary3 <- summary(pooled3)
+
+```
+
+## Variable Information
+
+### Smoking at Age 17 Sweep (Wave 7)
+####  1 = I have never smoked cigarettes, 2 = I have only ever tried smoking cigarettes once, 3 = I used to smoke sometimes but I never smoke a cigarette now, 4 = I sometimes smoke cigarettes now but I don't smoke as many as once a week, 5 = I usually smoke between one and six cigarettes a week, 6 = I usually smoke more than six cigarettes a week
+
+### Green Space at Age 11 Sweep (Wave 5)
+#### This is land-use percentile green space data. (https://doc.ukdataservice.ac.uk/doc/8154/mrdoc/pdf/mcs_green_space_deciles_user_guide_v3.pdf). We only want to keep LSOA Green Space as it's the finest-grain measure of green space (e.g., we don't want ward as its larger than an LSOA)
+
+### Urbanicity at Age 14 (Wave 6)
+### using the 2004 Urban/Rural definitions by the Office for National Statistics (Office for National Statistics, 2004). On the super output area (SOA) level, areas are classed as either ‘Urban (population > 10,000)’, ‘Town and fringe’ or ‘Village, hamlet or isolated dwellings’.
+
+### Cogitive Performance at Age 17 Sweep (Wave 7)
+#### the Number Analogies activity (GL Assessments). The activity assesses young people’s basic arithmetic knowledge and reasoning with numbers. Ten items were used from the Cognitive Abilities Test 3, Level H, Number Analogies test (David F Lohman, Robert L Thorndike, Elizabeth P Hagen, Adapted by Pauline Smith, Cres Fernandes and Steve Strand) which assessed the young person’s arithmetic knowledge and reasoning with numbers. The assessment was used and reduced from the original 20 items with permission of the owners GL Assessment. © David F Lohman, Robert L Thorndike, Elizabeth P Hagen, 2001. Reproduced by permission of GL Assessment. The assessment was timed, and cohort members had 6 minutes to work through the 10 questions in the question booklet. They were provided with pencil and paper if needed to work out answers.  Interviewers were told not to administer the assessment if the cohort member had a learning disability or serious behavioural problem (e.g. severe ADHD, autism), or was unable to respond in the required manner for the assessment (e.g. reading). Before beginning the assessment, interviewers were asked to confirm in CAI whether they received verbal consent from the cohort member to carry out the cognitive assessment
+
+## Descriptives before imputation
+
+```{r descriptive before, echo = FALSE}
+
+describe(numeric_vars)
+cat("Table 1: Distribution of Sex\n")
+table(merged_all$sex)
+cat("\nTable 2: Distribution of Smoking\n")
+table(merged_all$smoking) 
+cat("\nTable 2: Distribution of Ethnicity\n")
+table(merged_all$ethnicity_child)
+
+# Cognitive performance
+ggplot(merged_all, aes(x = cognitive_performance)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Cognitive Performance (Before Imputation)", x = "Cognitive Performance", y = "Count")
+
+# Green space
+ggplot(merged_all, aes(x = green_space)) +
+  geom_histogram(binwidth = 1, fill = "lightgreen", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Green Space (Before Imputation)", x = "Green Space Decile", y = "Count")
+
+# Urbanicity
+ggplot(merged_all, aes(x = urban)) +
+  geom_histogram(binwidth = 1, fill = "plum", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Urbanicity (Before Imputation)", x = "Urbanicity (3 = >10,000, 2 = town, 1 = village/hamlet", y = "Count")
+
+# OECD weekly income
+ggplot(merged_all, aes(x = OECD_weekly_income)) +
+  geom_histogram(fill = "orange", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Income (Before Imputation)", x = "OECD Weekly Income", y = "Count")
+
+# Age
+ggplot(merged_all, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "purple", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Age (Before Imputation)", x = "Age", y = "Count")
+
+# Missingness across all variables
+cat("\nTable 3: Percentage Missingness across all variables\n")
+missing_pct
+
+```
+
+## Descriptives after imputation
+
+```{r descriptive imputed, echo = FALSE}
+
+describe(imputed1 %>% select(cognitive_performance, green_space, smoking, urban, OECD_weekly_income, age))
+table(imputed1$sex)
+table(imputed1$urban)
+table(imputed1$smoking)
+table(imputed1$ethnicity_child)
+
+# Extract first imputed dataset
+imputed1 <- complete(mod_imp, 1)
+
+# Cognitive performance
+ggplot(imputed1, aes(x = cognitive_performance)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Cognitive Performance (After Imputation)", x = "Cognitive Performance", y = "Count")
+
+# Green space
+ggplot(imputed1, aes(x = green_space)) +
+  geom_histogram(binwidth = 1, fill = "lightgreen", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Green Space (After Imputation)", x = "Green Space Decile", y = "Count")
+
+# Urbanicity
+ggplot(imputed1, aes(x = urban)) +
+  geom_histogram(binwidth = 1, fill = "plum", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Urbanicity (After Imputation)", x = "Urbanicity (3 = >10,000, 2 = town, 1 = village/hamlet", y = "Count")
+
+# OECD weekly income
+ggplot(imputed1, aes(x = OECD_weekly_income)) +
+  geom_histogram(fill = "orange", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Income (After Imputation)", x = "OECD Weekly Income", y = "Count")
+
+# Age
+ggplot(imputed1, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "purple", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Age (After Imputation)", x = "Age", y = "Count")
+
+
+```
+
+## Correlations
+
+```{r correlations, echo=FALSE}
+
+ggplot(cor_long, aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile(color = "white") +   # each square
+  geom_text(aes(label = round(Correlation, 2)), color = "black", size = 4) + # add correlation numbers
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit = c(-1,1)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlation Matrix (After Imputation)", x = "", y = "")
+
+vars_for_corr <- c(
+  "age",
+  "cognitive_performance",
+  "green_space",
+  "urban",
+  "ethnicity_child",
+  "smoking",
+  "OECD_weekly_income",
+  "sex"
+)
+
+ggpairs(
+   imputed1[, vars_for_corr],
+
+  # LOWER: scatterplots + smooth ellipse analogue
+  lower = list(
+    continuous = wrap(
+      "points",
+      alpha = 0.4,
+      size = 1
+    )
+  ),
+
+  # DIAGONAL: histogram + density
+  diag = list(
+    continuous = wrap(
+      "densityDiag",
+      fill = "#D55E00",
+      alpha = 0.6
+    )
+  ),
+
+  # UPPER: Pearson correlations
+  upper = list(
+    continuous = wrap(
+      "cor",
+      method = "pearson",
+      size = 4
+    )
+  )
+) +
+  theme_minimal() +
+  labs(title = "Correlations After Imputation")
+
+```
+
+# Analyses
+
+```{r analysis, echo=FALSE}
+
+pooled_summary
+
+```
+
+# Sensitivity analyses (no smoking)
+
+```{r sensitivity, echo=FALSE}
+
+pooled_summary2
+
+```
+
+# results for meta-analysis
+
+```{r main, echo=FALSE}
+
+pooled_summary_main
+
+pooled_summary2
+
+pooled_summary3 
+
+```
+
+
+# Interaction Plot
+
+```{r interaction, include=FALSE}
+
+library(ggplot2)
+library(dplyr)
+
+imputed1 <- complete(mod_imp, 1)
+
+# Make urban a labelled factor
+imputed1 <- imputed1 %>%
+  mutate(
+    urban_f = factor(
+      urban,
+      levels = c(1, 2, 3),
+      labels = c("Village/hamlet", "Town/fringe", "Urban >10,000")
+    )
+  )
+
+
+```
+
+```{r interaction plot, echo=FALSE}
+
+ggplot(imputed1, aes(x = green_space,
+                     y = cognitive_performance,
+                     colour = urban_f)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    x = "Green space (decile)",
+    y = "Cognitive performance",
+    colour = "Urbanicity",
+    title = "Interaction between Green Space and Urbanicity"
+  ) +
+  theme_minimal()
+
+```
