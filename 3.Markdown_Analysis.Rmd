@@ -604,6 +604,510 @@ pooled_cognition_unadj <- coef_df %>%
   dplyr::mutate(t_value = pooled_estimate / pooled_se,
          p_value = 2 * pt(-abs(t_value), df = 100))
 
+# ============================================================
+# STANDARDISED REGRESSION MODELS
+# ============================================================
+
+# Continuous variables are z-standardised within each
+# imputed analytic sample.
+#
+# Categorical / ordinal variables are retained in their
+# original coding:
+#   child_sex
+#   MRI_study
+#   chip
+#   smoking_child
+
+
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+
+z_score <- function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}
+
+
+add_z_vars <- function(df, vars) {
+  for (v in vars) {
+    df[[paste0(v, "_z")]] <- z_score(df[[v]])
+  }
+  df
+}
+
+
+# This mirrors the pooling approach already used elsewhere
+# in the current script
+pool_standardised_models <- function(models) {
+
+  coef_list <- lapply(models, function(fit) {
+
+    tmp <- as.data.frame(coef(summary(fit)))
+    tmp$term <- rownames(tmp)
+    rownames(tmp) <- NULL
+
+    tmp
+  })
+
+  coef_df <- bind_rows(coef_list, .id = "dataset")
+
+  coef_df %>%
+    group_by(term) %>%
+    summarise(
+      pooled_estimate = mean(Estimate),
+      pooled_se = mean(`Std. Error`),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      t_value = pooled_estimate / pooled_se,
+      p_value = 2 * pt(-abs(t_value), df = 100)
+    )
+}
+
+
+# ============================================================
+# PREPARE STANDARDISED DATA
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Brain-PAD
+# ------------------------------------------------------------
+
+brain_std <- lapply(
+  imp_list_with_scores_brain,
+  function(df) {
+
+    # Exact analytic sample
+    df <- df[!is.na(df$Centile_PAD), ]
+
+    add_z_vars(
+      df,
+      c(
+        "Centile_PAD",
+        "BuiltEnv",
+        "contextual_age41mum",
+        "Age_at_MRI"
+      )
+    )
+  }
+)
+
+
+# ------------------------------------------------------------
+# Epigenetic age
+# ------------------------------------------------------------
+
+epi_continuous_vars <- c(
+  "BuiltEnv",
+  "contextual_age41mum",
+  "Smoking_DNAm",
+  "Bcell",
+  "CD4T",
+  "CD8T",
+  "Gran",
+  "Mono",
+  "NK",
+  paste0("V", 1:10)
+)
+
+
+prepare_epi_std <- function(df, outcome) {
+
+  # Restrict first so standardisation corresponds to
+  # the exact analytic sample
+  df <- df[!is.na(df[[outcome]]), ]
+
+  add_z_vars(
+    df,
+    c(outcome, epi_continuous_vars)
+  )
+}
+
+
+altum_std <- lapply(
+  imp_list_with_scores_epi,
+  prepare_epi_std,
+  outcome = "Altum_EAA"
+)
+
+horvath_std <- lapply(
+  imp_list_with_scores_epi,
+  prepare_epi_std,
+  outcome = "Horvath_EAA"
+)
+
+pace_std <- lapply(
+  imp_list_with_scores_epi,
+  prepare_epi_std,
+  outcome = "PACEAge"
+)
+
+
+# ------------------------------------------------------------
+# Cognition
+# ------------------------------------------------------------
+
+cognition_std <- lapply(
+  imp_list_with_scores_cognition,
+  function(df) {
+
+    df <- df[
+      !is.na(df$predictive_processing_score_child_age24),
+    ]
+
+    add_z_vars(
+      df,
+      c(
+        "predictive_processing_score_child_age24",
+        "BuiltEnv",
+        "contextual_age41mum",
+        "age_at_cognition_child_age24"
+      )
+    )
+  }
+)
+
+
+# ============================================================
+# ADJUSTED STANDARDISED MODELS
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Brain-PAD
+# ------------------------------------------------------------
+
+centile_brainage_models_std <- lapply(
+  brain_std,
+  function(df) {
+
+    lm(
+      Centile_PAD_z ~
+        BuiltEnv_z +
+        child_sex +
+        smoking_child +
+        contextual_age41mum_z +
+        Age_at_MRI_z +
+        MRI_study,
+      data = df
+    )
+  }
+)
+
+pooled_centile_brainage_std <-
+  pool_standardised_models(centile_brainage_models_std)
+
+
+# ------------------------------------------------------------
+# Altum
+# ------------------------------------------------------------
+
+altum_epiage_models_std <- lapply(
+  altum_std,
+  function(df) {
+
+    lm(
+      Altum_EAA_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        Smoking_DNAm_z +
+        chip +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_altum_epiage_std <-
+  pool_standardised_models(altum_epiage_models_std)
+
+
+# ------------------------------------------------------------
+# Horvath
+# ------------------------------------------------------------
+
+horvath_epiage_models_std <- lapply(
+  horvath_std,
+  function(df) {
+
+    lm(
+      Horvath_EAA_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        Smoking_DNAm_z +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        chip +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_horvath_epiage_std <-
+  pool_standardised_models(horvath_epiage_models_std)
+
+
+# ------------------------------------------------------------
+# PACE
+# ------------------------------------------------------------
+
+pace_epiage_models_std <- lapply(
+  pace_std,
+  function(df) {
+
+    lm(
+      PACEAge_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        Smoking_DNAm_z +
+        chip +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_pace_epiage_std <-
+  pool_standardised_models(pace_epiage_models_std)
+
+
+# ------------------------------------------------------------
+# Cognition
+# ------------------------------------------------------------
+
+cognition_models_std <- lapply(
+  cognition_std,
+  function(df) {
+
+    lm(
+      predictive_processing_score_child_age24_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        smoking_child +
+        age_at_cognition_child_age24_z,
+      data = df
+    )
+  }
+)
+
+pooled_cognition_std <-
+  pool_standardised_models(cognition_models_std)
+
+
+
+# ============================================================
+# STANDARDISED SENSITIVITY MODELS
+# Remove smoking
+# ============================================================
+
+
+centile_brainage_models_sens_std <- lapply(
+  brain_std,
+  function(df) {
+
+    lm(
+      Centile_PAD_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        Age_at_MRI_z +
+        MRI_study,
+      data = df
+    )
+  }
+)
+
+pooled_centile_brainage_sens_std <-
+  pool_standardised_models(centile_brainage_models_sens_std)
+
+
+altum_epiage_models_sens_std <- lapply(
+  altum_std,
+  function(df) {
+
+    lm(
+      Altum_EAA_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        chip +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_altum_epiage_sens_std <-
+  pool_standardised_models(altum_epiage_models_sens_std)
+
+
+horvath_epiage_models_sens_std <- lapply(
+  horvath_std,
+  function(df) {
+
+    lm(
+      Horvath_EAA_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        chip +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_horvath_epiage_sens_std <-
+  pool_standardised_models(horvath_epiage_models_sens_std)
+
+
+pace_epiage_models_sens_std <- lapply(
+  pace_std,
+  function(df) {
+
+    lm(
+      PACEAge_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        chip +
+        Bcell_z +
+        CD4T_z +
+        CD8T_z +
+        Gran_z +
+        Mono_z +
+        NK_z +
+        V1_z + V2_z + V3_z + V4_z + V5_z +
+        V6_z + V7_z + V8_z + V9_z + V10_z,
+      data = df
+    )
+  }
+)
+
+pooled_pace_epiage_sens_std <-
+  pool_standardised_models(pace_epiage_models_sens_std)
+
+
+cognition_models_sens_std <- lapply(
+  cognition_std,
+  function(df) {
+
+    lm(
+      predictive_processing_score_child_age24_z ~
+        BuiltEnv_z +
+        child_sex +
+        contextual_age41mum_z +
+        age_at_cognition_child_age24_z,
+      data = df
+    )
+  }
+)
+
+pooled_cognition_sens_std <-
+  pool_standardised_models(cognition_models_sens_std)
+
+
+
+# ============================================================
+# STANDARDISED UNADJUSTED MODELS
+# ============================================================
+
+
+centile_brainage_models_unadj_std <- lapply(
+  brain_std,
+  function(df) {
+    lm(Centile_PAD_z ~ BuiltEnv_z, data = df)
+  }
+)
+
+pooled_centile_brainage_unadj_std <-
+  pool_standardised_models(centile_brainage_models_unadj_std)
+
+
+altum_epiage_models_unadj_std <- lapply(
+  altum_std,
+  function(df) {
+    lm(Altum_EAA_z ~ BuiltEnv_z, data = df)
+  }
+)
+
+pooled_altum_epiage_unadj_std <-
+  pool_standardised_models(altum_epiage_models_unadj_std)
+
+
+horvath_epiage_models_unadj_std <- lapply(
+  horvath_std,
+  function(df) {
+    lm(Horvath_EAA_z ~ BuiltEnv_z, data = df)
+  }
+)
+
+pooled_horvath_epiage_unadj_std <-
+  pool_standardised_models(horvath_epiage_models_unadj_std)
+
+
+pace_epiage_models_unadj_std <- lapply(
+  pace_std,
+  function(df) {
+    lm(PACEAge_z ~ BuiltEnv_z, data = df)
+  }
+)
+
+pooled_pace_epiage_unadj_std <-
+  pool_standardised_models(pace_epiage_models_unadj_std)
+
+
+cognition_models_unadj_std <- lapply(
+  cognition_std,
+  function(df) {
+    lm(
+      predictive_processing_score_child_age24_z ~ BuiltEnv_z,
+      data = df
+    )
+  }
+)
+
+pooled_cognition_unadj_std <-
+  pool_standardised_models(cognition_models_unadj_std)
 
 ```
 
@@ -633,6 +1137,35 @@ format_results_table <- function(df, caption = "Results Table") {
     kable_styling(full_width = FALSE,
                   bootstrap_options = c("striped", "hover", "condensed"))
 }
+
+# ============================================================
+# STANDARDISED RESULTS TABLES
+# ============================================================
+
+format_results_table(
+  pooled_centile_brainage_std,
+  "Standardised Adjusted Model: Brain Age (Centile)"
+)
+
+format_results_table(
+  pooled_altum_epiage_std,
+  "Standardised Adjusted Model: Epigenetic Age (Altum)"
+)
+
+format_results_table(
+  pooled_horvath_epiage_std,
+  "Standardised Adjusted Model: Epigenetic Age (Horvath)"
+)
+
+format_results_table(
+  pooled_pace_epiage_std,
+  "Standardised Adjusted Model: Epigenetic Age (PACE)"
+)
+
+format_results_table(
+  pooled_cognition_std,
+  "Standardised Adjusted Model: Cognition"
+)
 
 ```
 
